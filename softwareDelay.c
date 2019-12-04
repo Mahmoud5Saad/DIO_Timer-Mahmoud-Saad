@@ -28,5 +28,5 @@ void SwDelay_ms(uint32 n)
 {
 	/* my board is working at 1 MHz */
 	uint32 i;
-	for (i=0; i<15*n;i++);
+	for (i=0; i<93*n;i++);
 }
