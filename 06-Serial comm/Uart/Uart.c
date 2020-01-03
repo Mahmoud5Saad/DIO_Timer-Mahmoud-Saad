@@ -17,6 +17,7 @@
  *			INCLUDES                                    
  *******************************************************************************/
 #include "UART.h"
+#include "DIO.h"
 /*******************************************************************************
  *			Preprocessor Macros                                    
  *******************************************************************************/
@@ -58,10 +59,9 @@ void (*gpf_RegisterEmpty_Cbk_Uart)(void);
  **/     
 ERROR_STATUS UART_Init(UART_cfg_s *pUART_cfg_s)
 {
-	if (	(NULL == pUART_cfg_s) || !(UartState_UNINIT == ge_Uart_state) ||\
-			(NULL==pUART_cfg_s->DataRegisterEmpty_Cbk_ptr) ||\
-			(NULL==pUART_cfg_s->Resceive_Cbk_ptr) ||\
-			(NULL==pUART_cfg_s->Transmit_Cbk_ptr) )
+	DIO_Cfg_s dio_init_RX = { GPIOD, BIT0, INPUT };
+	DIO_Cfg_s dio_init_TX = { GPIOD, BIT1, OUTPUT };	
+	if (	(NULL == pUART_cfg_s) || !(UartState_UNINIT == ge_Uart_state) )
 	{
 		return E_NOK;
 	} 
@@ -87,12 +87,16 @@ ERROR_STATUS UART_Init(UART_cfg_s *pUART_cfg_s)
 		switch (pUART_cfg_s->u8_DesiredOperation)
 		{
 			case TRANSMITTER:
+				DIO_init(&dio_init_TX);	
 				UART_CSRB |= UART_TXEN;
 				break;
 			case RECEIVER:
+				DIO_init(&dio_init_RX);
 				UART_CSRB |= UART_RXEN;
 				break;
 			case TRANSCEIVER:
+				DIO_init(&dio_init_RX);
+				DIO_init(&dio_init_TX);			
 				UART_CSRB |= UART_TXEN | UART_RXEN;
 				break;
 			default:
@@ -104,15 +108,18 @@ ERROR_STATUS UART_Init(UART_cfg_s *pUART_cfg_s)
 		}
 		if (UART_TWO_STOP_BIT == pUART_cfg_s->u8_StopBit)
 		{
-			UART_CSRC |= UART_SBS;
+			UART_CSRC |= UART_SBS | (1<<7) /* acess UCSRC */;
 		}
 		switch (pUART_cfg_s->u8_ParityBit)
 		{
+			case UART_NO_PARITY:
+				UART_CSRC = (UART_CSRC&0x80)  & ~(UART_PM0 | UART_PM1) /* acess UCSRC */;
+				break;
 			case UART_EVEN_PARITY:
-				UART_CSRC |= UART_PM1;
+				UART_CSRC |= UART_PM1 | (1<<7) /* acess UCSRC */;
 				break;
 			case UART_ODD_PARITY:
-				UART_CSRC |= UART_PM1 | UART_PM0;
+				UART_CSRC |= UART_PM1 | UART_PM0 | (1<<7) /* acess UCSRC */;
 				break;
 			default:
 				return E_NOK;
@@ -128,20 +135,14 @@ ERROR_STATUS UART_Init(UART_cfg_s *pUART_cfg_s)
 			case UART_7_BIT:
 				break;
 			case UART_8_BIT:
+				UART_CSRC |= UART_CSZ1 | UART_CSZ0 | (1<<7) /* ACCESS usrc*/;
 				break;
 			case UART_9_BIT:
 				break;													
 		}
 		/* get 9600 baudrate */
-		UART_BRRH = 0;
-		if (UART_DOUBLE_SPEED == pUART_cfg_s->u8_DoubleSpeed)
-		{
-			UART_BRRL = 12;
-		} 
-		else if (UART_NO_DOUBLE_SPEED == pUART_cfg_s->u8_DoubleSpeed)
-		{
-			UART_BRRL = 12;
-		}
+		UART_BRRH = ((pUART_cfg_s->u32_BaudRate)>>8);
+		UART_BRRL = (uint8) (pUART_cfg_s->u32_BaudRate);
 		ge_Uart_state = UartState_INIT;
 		return E_OK;
 	}
@@ -165,9 +166,8 @@ ERROR_STATUS UART_Deinit(void);
  **/  
 ERROR_STATUS UART_SendByte(uint8 u8_Data)
 {
+	while (!(UART_CSRA&UART_DRE));
 	UART_DR = u8_Data;
-	while (UART_CSRA&UART_TXC);
-	UART_CSRA |= UART_TXC;
 	return E_OK;
 }
 
@@ -180,7 +180,7 @@ ERROR_STATUS UART_SendByte(uint8 u8_Data)
  **/  
 ERROR_STATUS UART_ReceiveByte(uint8 *pu8_ReceivedData)
 {
-	while (UART_CSRA&UART_TXC);
+	while (!(UART_CSRA&UART_RXC));
 	*pu8_ReceivedData = UART_DR;
 	return E_OK;
 }
