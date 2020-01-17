@@ -3,7 +3,7 @@
  *
  * Created: 12/20/2019 3:25:15 PM
  *  Author: Wave7
- */ 
+ */
 
 
 
@@ -12,7 +12,7 @@
 
 #include "std_types.h"
 #include "interrupt.h"
-#include "dio.h"
+#include "DIO.h"
 
 typedef struct {
 uint8 u8_SPIMode;

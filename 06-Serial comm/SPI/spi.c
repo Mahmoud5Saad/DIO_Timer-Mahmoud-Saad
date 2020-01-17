@@ -8,63 +8,21 @@
 /*				 INCLUDES			        */
 /************************************************************************/
 #include "spi.h"
-#include "registers.h"
+#include "DIO.h"
+#include "char_lcd.h"
+#include <stdlib.h>
  /************************************************************************/
 /*			LOCAL MACROS/DEFINES FOR REGISTERS & PINS		        */
 /************************************************************************/
-#define SPI_DATA 	    *((reg_type8)(0x2F))
+#define SPI_DATA_REG    *((reg_type8)(0x2F))
 #define SPI_STATUS_REG  *((reg_type8)(0x2E))
 #define SPI_CTRL_REG    *((reg_type8)(0x2D))
-
-#define SPI_PORT    GPIOB
-#define SS_PIN      PIN4
-#define MOSI_PIN    PIN5
-#define MISO_PIN    PIN6
-#define SCK_PIN     PIN7
-/************************************************************************/
-/*			LOCAL MACROS/DEFINES FOR MASKS/VALUES/FUNCTIONS		        */
-/************************************************************************/
-#define SPI_INT_FLAG        0x80
-#define SPI_INT_ENB         0x80
-#define SPI_POLLING         0x7F
-#define SPI_INT_MASK        0x7F
-#define SPI_ENB             0x40
-#define SPI_LSB_FIRST       0x20
-#define SPI_MSB_FIRST       0xDF
-#define SPI_ORDER_MASK      0xDF
-#define SPI_MASTER_MODE     0x10
-#define SPI_SLAVE_MODE      0xEF
-#define SPI_MODE_MASK       0xEF
-#define SPI_PRESCALER_MASK  0xFC
-#define SPI_DATA_MODE_MASK  0xF3
-#define STU_PRESCALER_MASK  0xF7
-
-
-#define TRANSMITTING    0
-#define BYTE_SENT       1
-
-#define SET_SS_PIN_LOW()    DIO_Write(SPI_PORT, SS_PIN, LOW)
-
-#define SET_SS_PIN_HIGH()   DIO_Write(SPI_PORT, SS_PIN, HIGH)
-
-#define RETURN_ON_E_NOK(VAR){\
-if ((VAR) == E_NOK)\
-    {\
-        return E_NOK;\
-    }\
-    else\
-    {\
-    }\
-}
 /************************************************************************/
 /*		         GLOBAL STATIC VARIABLES		        */
 /************************************************************************/
-static uint8 gu8CheckInitialization = 0;
-static uint8 Direction = SLAVE;
-static void (*gfpSpiFunctionPointer) (void) = NULL;
-static const uint8 gau8SpiMode[2] = {SPI_SLAVE_MODE, SPI_MASTER_MODE};
-static const uint8 gau8SpiDataOrder[2] = {SPI_MSB_FIRST, SPI_LSB_FIRST};
-static const uint8 gau8SpiPollingOrINT[2] = {SPI_POLLING, SPI_INT_ENB};
+static void (*gfp_SpiFunctionPointer) (void) = NULL;
+volatile uint8 gu8_RecievedData = 0;
+volatile uint8 gu8_RecievedFlag = FALSE;
 /************************************************************************/
 /*				 	SPI INTERRUPT SERVICE ROUTINES                  */
 /************************************************************************/
@@ -77,16 +35,31 @@ static const uint8 gau8SpiPollingOrINT[2] = {SPI_POLLING, SPI_INT_ENB};
  * Return:
  * Description: Performs interrupt Service routine when SPI interrupt is triggered
  */
-ISR(SPI_STC_vect){
-    if (gfpSpiFunctionPointer != NULL)
+
+
+ISR(SPI_STC_vect)
+{
+    gu8_RecievedData = SPI_DATA_REG;
+	gu8_RecievedFlag = TRUE;
+	/*
+	char str[10];
+	itoa(gu8_RecievedData, str, 10);
+	LCD_clear();
+	LCD_send_string(str);
+	*/	
+    if (gfp_SpiFunctionPointer != NULL)
     {
-        (*gfpSpiFunctionPointer)();
+        (*gfp_SpiFunctionPointer)();
     }
+	
 }
+
 
 /************************************************************************/
 /*		               APIS IMPLEMENTATION		        */
 /************************************************************************/
+
+
 /**
 * @brief: Initialize SPI module
 * @param:
@@ -100,68 +73,67 @@ ERROR_STATUS SPI_Init(SPI_Cfg_s* pstr_SPI_Confg)
     {
         return E_NOK;
     }
-    else if (pstr_SPI_Confg->CBK_Func == NULL)
+    SPI_CTRL_REG = 0x00;
+    sei();
+    DIO_Cfg_s Init_Pins;
+    if (pstr_SPI_Confg->u8_SPIMode == SLAVE)
     {
-        return E_NOK;
+        SPI_CTRL_REG = SPI_CTRL_REG | 0x00;
+        Init_Pins.dir = INPUT;
+        Init_Pins.GPIO = GPIOB;
+        Init_Pins.pins = (PIN4 | PIN5 | PIN7);
+        DIO_init(&Init_Pins);
+        Init_Pins.dir = OUTPUT;
+        Init_Pins.GPIO = GPIOB;
+        Init_Pins.pins = (PIN1 | PIN3 | PIN6);
+        DIO_init(&Init_Pins);
     }
-    else if (pstr_SPI_Confg->u8_DataMode > MODE_3)
+    else if (pstr_SPI_Confg->u8_SPIMode == MASTER)
     {
-        return E_NOK;
-    }
-    else if (pstr_SPI_Confg->u8_DataOrder > LSB)
-    {
-        return E_NOK;
-    }
-    else if (pstr_SPI_Confg->u8_InterruptMode > INTERRUPT)
-    {
-        return E_NOK;
-    }
-    else if (pstr_SPI_Confg->u8_SPIMode > MASTER)
-    {
-        return E_NOK;
-    }
-    else if (pstr_SPI_Confg->u8_Prescaler > SPI_PRESCALER_128)
-    {
-        return E_NOK;
+        SPI_CTRL_REG = SPI_CTRL_REG | 0x10;
+        Init_Pins.dir = OUTPUT;
+        Init_Pins.GPIO = GPIOB;
+        Init_Pins.pins = (PIN1 | PIN3 | PIN4 | PIN5 | PIN7);
+        DIO_init(&Init_Pins);
+        Init_Pins.dir = INPUT;
+        Init_Pins.GPIO = GPIOB;
+        Init_Pins.pins = (PIN6);
+        DIO_init(&Init_Pins);
     }
     else
     {
-
+        return E_NOK;
     }
-
-    DIO_Cfg_s SPI_PinConfig;
-    SPI_PinConfig.GPIO = SPI_PORT;
-    SPI_CTRL_REG = (SPI_CTRL_REG & SPI_DATA_MODE_MASK) | ((pstr_SPI_Confg->u8_DataMode) << 2);
-    SPI_CTRL_REG = (SPI_CTRL_REG & SPI_PRESCALER_MASK) | ((pstr_SPI_Confg->u8_Prescaler) / 2);
-    SPI_STATUS_REG = (SPI_STATUS_REG & STU_PRESCALER_MASK) | ((pstr_SPI_Confg->u8_Prescaler + 1) % 2);
-    SPI_CTRL_REG = (SPI_CTRL_REG & SPI_ORDER_MASK) | gau8SpiDataOrder[pstr_SPI_Confg->u8_DataOrder];
-    SPI_CTRL_REG = (SPI_CTRL_REG & SPI_INT_MASK) | gau8SpiPollingOrINT[pstr_SPI_Confg->u8_InterruptMode];
-    SPI_CTRL_REG = (SPI_CTRL_REG & SPI_MODE_MASK) | gau8SpiMode[pstr_SPI_Confg->u8_SPIMode];
-
-    if (pstr_SPI_Confg->u8_SPIMode == MASTER)
+    if (pstr_SPI_Confg->u8_DataOrder == LSB)
     {
-        SPI_PinConfig.pins = (MOSI_PIN | SS_PIN | SCK_PIN);
-        SPI_PinConfig.dir = OUTPUT;
-        DIO_init(&SPI_PinConfig);
-        SPI_PinConfig.pins = (MISO_PIN);
-        SPI_PinConfig.dir = INPUT;
-        DIO_init(&SPI_PinConfig);
-        Direction = MASTER;
+        SPI_CTRL_REG = SPI_CTRL_REG | 0x20;
     }
-    else if (pstr_SPI_Confg->u8_SPIMode == SLAVE)
+    else if (pstr_SPI_Confg->u8_DataOrder == MSB)
     {
-        SPI_PinConfig.pins = (MOSI_PIN | SS_PIN | SCK_PIN);
-        SPI_PinConfig.dir = INPUT;
-        DIO_init(&SPI_PinConfig);
-        SPI_PinConfig.pins = (MISO_PIN);
-        SPI_PinConfig.dir = OUTPUT;
-        DIO_init(&SPI_PinConfig);
-        Direction = SLAVE;
+        SPI_CTRL_REG = SPI_CTRL_REG | 0x00;
     }
-    gfpSpiFunctionPointer = pstr_SPI_Confg->CBK_Func;
-    gu8CheckInitialization = 1;
+    else
+    {
+        return E_NOK;
+    }
+    if (pstr_SPI_Confg->u8_InterruptMode == INTERRUPT)
+    {
+        SPI_CTRL_REG = SPI_CTRL_REG | 0x80;
+    }
+    else if (pstr_SPI_Confg->u8_InterruptMode == POLLING)
+    {
+        SPI_CTRL_REG = SPI_CTRL_REG | 0x00;
+    }
+    else
+    {
+        return E_NOK;
+    }
+    gfp_SpiFunctionPointer = pstr_SPI_Confg->CBK_Func;
+    SPI_CTRL_REG = SPI_CTRL_REG | 0x02;
+    SPI_CTRL_REG = SPI_CTRL_REG | 0x40;
     return E_OK;
 }
+
 /**
 * @brief: Transmit one byte over SPI
 * @param:
@@ -171,39 +143,12 @@ ERROR_STATUS SPI_Init(SPI_Cfg_s* pstr_SPI_Confg)
 */
 ERROR_STATUS SPI_SendByte(uint8 u8_Data)
 {
-    if (gu8CheckInitialization == 0)
-    {
-        return E_NOK;
-    }
-    else
-    {
-
-    }
-    if (Direction == MASTER)
-    {
-        SET_SS_PIN_LOW();
-    }
-    else
-    {
-
-    }
-    SPI_DATA = (SPI_DATA & 0x00) | (uint8)(u8_Data);
-    uint8 SendingStatus = TRANSMITTING;
-    while (SendingStatus != BYTE_SENT)
-    {
-        SPI_GetStatus(&SendingStatus);
-    }
-    if (Direction == MASTER)
-    {
-        SET_SS_PIN_HIGH();
-    }
-    else
-    {
-
-    }
+    DIO_Write(GPIOB, PIN4, LOW);
+    SPI_DATA_REG = u8_Data;
+    while ((SPI_STATUS_REG & 0x80) == 0);
+    DIO_Write(GPIOB, PIN4, HIGH);
     return E_OK;
 }
-
 /**
 * @brief: Receive one byte over SPI
 * @param:
@@ -213,40 +158,21 @@ ERROR_STATUS SPI_SendByte(uint8 u8_Data)
 */
 ERROR_STATUS SPI_ReceiveByte(uint8 *ptru8_Data)
 {
-    if (gu8CheckInitialization == 0)
+    if (ptru8_Data == NULL)
     {
         return E_NOK;
     }
-    else if (ptru8_Data == NULL)
+    *ptru8_Data = gu8_RecievedData;
+    if (gu8_RecievedFlag == FALSE)
     {
         return E_NOK;
     }
     else
     {
-
+        gu8_RecievedFlag = FALSE;
+        *ptru8_Data = gu8_RecievedData;
+        return E_OK;
     }
-    if (Direction == MASTER)
-    {
-        SET_SS_PIN_LOW();
-    }
-    else
-    {
-
-    }
-    uint8 RecievingStatus = TRANSMITTING;
-    while (RecievingStatus != BYTE_SENT)
-    {
-        SPI_GetStatus(&RecievingStatus);
-    }
-    if (Direction == MASTER)
-    {
-        SET_SS_PIN_HIGH();
-    }
-    else
-    {
-
-    }
-    *ptru8_Data = SPI_DATA;
     return E_OK;
 }
 
@@ -259,25 +185,18 @@ ERROR_STATUS SPI_ReceiveByte(uint8 *ptru8_Data)
 */
 ERROR_STATUS SPI_GetStatus(uint8 *u8_Data)
 {
-    if (gu8CheckInitialization == 0)
+    if (u8_Data == NULL)
     {
         return E_NOK;
     }
-    else if (u8_Data == NULL)
+    else if ((SPI_STATUS_REG & 0x80) == 0)
     {
-        return E_NOK;
+        *u8_Data = FALSE;
     }
     else
     {
-
-    }
-    if ((SPI_STATUS_REG & SPI_INT_FLAG) == 0)
-    {
-        *u8_Data = TRANSMITTING;
-    }
-    else
-    {
-        *u8_Data = BYTE_SENT;
+        *u8_Data = TRUE;
+        //DIO_Write(GPIOB, PIN3, HIGH);
     }
     return E_OK;
 }
